@@ -53,7 +53,8 @@ def get_color(name):
     return colors.get(name.lower(), (255, 255, 255))  # default to white
 
 class Shape:
-    def __init__(self, shape_type: str, color: str, size: float, rel_pos, parent=None, interactable=False, has_border=False, border_thickness=3, z_order=0):
+    def __init__(self, shape_type: str, color: str, size: float, rel_pos, parent=None, 
+                 interactable=False, has_border=False, border_thickness=3, z_order=0):
         self.shape_type = shape_type
         self.color = color
         self.size = size  # scale factor (0.0 to 1.0)
@@ -64,6 +65,7 @@ class Shape:
         self.has_border = has_border
         self.border_thickness = border_thickness
         self.z_order = z_order
+        self.scene = None  # Will be set when added to scene
 
         if parent:
             parent.children.append(self)
@@ -87,61 +89,159 @@ class Shape:
         base = min(root_size)
         return (int(base * self.size), int(base * self.size))
 
-    def draw(self, screen, root_size, mouse_pos, mouse_click_pos):
-        size = self.get_pixel_size(root_size)
-        pos = self.get_absolute_position(root_size)
-
+    def check_interaction(self, screen_pos, size, mouse_pos):
+        """Returns True if mouse is over this shape"""
         rect = pygame.Rect(
-            pos[0] - size[0] // 2,
-            pos[1] - size[1] // 2,
+            screen_pos[0] - size[0] // 2,
+            screen_pos[1] - size[1] // 2,
             size[0],
             size[1]
         )
-
-        # Interactable behavior
-        draw_color = get_color(self.color)
-        if self.interactable and rect.collidepoint(mouse_pos):
-            draw_color = tuple(min(c + 40, 255) for c in draw_color)  # lighten on hover
-            if mouse_click_pos and rect.collidepoint(mouse_click_pos):
-                print(f"{self.shape_type.capitalize()} was clicked!")
-
-        # Draw shape
-        if self.shape_type == "square":
-            pygame.draw.rect(screen, draw_color, rect)
-        elif self.shape_type == "circle":
-            pygame.draw.circle(screen, draw_color, pos, size[0] // 2)
-        else:
-            print(f"Unsupported shape: {self.shape_type}")
-
-        # Draw matching border if requested
-        if self.has_border:
-            border_color = get_color("black")
-            if self.shape_type == "square":
-                pygame.draw.rect(screen, border_color, rect, self.border_thickness)
-            elif self.shape_type == "circle":
-                pygame.draw.circle(screen, border_color, pos, size[0] // 2 + self.border_thickness // 2, self.border_thickness)
         
-        # Draw children recursively
-        for child in sorted(self.children, key=lambda x: x.z_order):
-            child.draw(screen, root_size, mouse_pos, mouse_click_pos)
+        if self.shape_type == "square":
+            return rect.collidepoint(mouse_pos)
+        elif self.shape_type == "circle":
+            # For circles, check if mouse is within radius
+            center = (screen_pos[0], screen_pos[1])
+            radius = size[0] // 2
+            dx = mouse_pos[0] - center[0]
+            dy = mouse_pos[1] - center[1]
+            return (dx * dx + dy * dy) <= (radius * radius)
+        return False
+
+    def draw(self, screen, root_size):
+        """Draw the shape normally"""
+        size = self.get_pixel_size(root_size)
+        pos = self.get_absolute_position(root_size)
+        
+        draw_color = get_color(self.color)
+        self._draw_shape(screen, pos, size, draw_color)
+        if self.has_border:
+            self._draw_border(screen, pos, size)
+            
+    def draw_highlighted(self, screen, root_size):
+        """Draw the shape in its highlighted state"""
+        size = self.get_pixel_size(root_size)
+        pos = self.get_absolute_position(root_size)
+        
+        highlight_color = tuple(min(c + 40, 255) for c in get_color(self.color))
+        self._draw_shape(screen, pos, size, highlight_color)
+        if self.has_border:
+            self._draw_border(screen, pos, size)
+            
+    def _draw_shape(self, screen, pos, size, color):
+        """Internal method for drawing the shape"""
+        if self.shape_type == "square":
+            pygame.draw.rect(screen, color, pygame.Rect(
+                pos[0] - size[0] // 2,
+                pos[1] - size[1] // 2,
+                size[0],
+                size[1]
+            ))
+        elif self.shape_type == "circle":
+            pygame.draw.circle(screen, color, pos, size[0] // 2)
+            
+    def _draw_border(self, screen, pos, size):
+        """Internal method for drawing the border"""
+        border_color = get_color("black")
+        if self.shape_type == "square":
+            pygame.draw.rect(screen, border_color, pygame.Rect(
+                pos[0] - size[0] // 2,
+                pos[1] - size[1] // 2,
+                size[0],
+                size[1]
+            ), self.border_thickness)
+        elif self.shape_type == "circle":
+            pygame.draw.circle(screen, border_color, pos, 
+                size[0] // 2 + self.border_thickness // 2, 
+                self.border_thickness)
+
+    def handle_click(self):
+        """Handle click events"""
+        print(f"{self.shape_type.capitalize()} (z:{self.z_order}) was clicked!")
+        # Future: self.on_click()
+
+class SceneManager:
+    def __init__(self):
+        self.root_shapes = []
+        self.all_shapes = []  # Flat list for easy z-order operations
+        
+    def add_shape(self, shape):
+        if not shape.parent:
+            self.root_shapes.append(shape)
+        self.all_shapes.append(shape)
+        
+    def get_shape_at(self, mouse_pos, root_size):
+        # Get all shapes under the mouse, sorted by z-order (highest first)
+        shapes_under_mouse = [
+            shape for shape in sorted(self.all_shapes, key=lambda x: -x.z_order)
+            if shape.interactable and shape.check_interaction(
+                shape.get_absolute_position(root_size),
+                shape.get_pixel_size(root_size),
+                mouse_pos
+            )
+        ]
+        return shapes_under_mouse[0] if shapes_under_mouse else None
+    
+    def draw(self, screen, root_size, mouse_pos, mouse_click_pos):
+        # First pass: Draw all shapes in normal state
+        for shape in sorted(self.all_shapes, key=lambda x: x.z_order):
+            shape.draw(screen, root_size)
+            
+        # Second pass: Draw only the hovered shape again with highlight
+        # (if it exists and is interactable)
+        hovered_shape = self.get_shape_at(mouse_pos, root_size)
+        if hovered_shape:
+            # Draw all shapes that are above our hovered shape again
+            # to maintain proper z-ordering
+            hover_z = hovered_shape.z_order
+            
+            # Draw the highlight
+            hovered_shape.draw_highlighted(screen, root_size)
+            
+            # Redraw any shapes that should appear above the highlighted shape
+            for shape in sorted(self.all_shapes, key=lambda x: x.z_order):
+                if shape.z_order > hover_z:
+                    shape.draw(screen, root_size)
+            
+            # Handle click if needed
+            if mouse_click_pos and hovered_shape.check_interaction(
+                hovered_shape.get_absolute_position(root_size),
+                hovered_shape.get_pixel_size(root_size),
+                mouse_click_pos
+            ):
+                hovered_shape.handle_click()
 
 def create_safe(open: bool, sizeMult: float):
+    scene = SceneManager()
+    
     safe_size = 0.7 * sizeMult
-    safe_bg = Shape("square", "gray", safe_size, (0.5, 0.5), interactable=False, has_border=True, z_order=1)
+    safe_bg = Shape("square", "gray", safe_size, (0.5, 0.5), 
+                    interactable=False, has_border=True, z_order=0)
+    scene.add_shape(safe_bg)
 
-    door = Shape("square", "gray", 0.5, (0.0 * safe_size, 0.0 * safe_size), parent=safe_bg, interactable=True, has_border=True, z_order=2)
+    door = Shape("square", "gray", 0.5, (0.0 * safe_size, 0.0 * safe_size), 
+                 parent=safe_bg, interactable=True, has_border=True, z_order=10)
+    scene.add_shape(door)
     
     screw_size = 0.1 * sizeMult
     screw_position = (0.5 * safe_size) + (0.5 * screw_size)
-    screw1 = Shape("circle", "lightgray", screw_size, (-screw_position, -screw_position), parent=safe_bg, interactable=True, has_border=True, z_order=3)
-    screw2 = Shape("circle", "lightgray", screw_size, (screw_position, -screw_position), parent=safe_bg, interactable=True, has_border=True, z_order=3)
-    screw3 = Shape("circle", "lightgray", screw_size, (-screw_position, screw_position), parent=safe_bg, interactable=True, has_border=True, z_order=3)
-    screw4 = Shape("circle", "lightgray", screw_size, (screw_position, screw_position), parent=safe_bg, interactable=True, has_border=True, z_order=3)
+    screws = []
+    for pos in [(-screw_position, -screw_position),
+                (screw_position, -screw_position),
+                (-screw_position, screw_position),
+                (screw_position, screw_position)]:
+        screw = Shape("circle", "lightgray", screw_size, pos,
+                     parent=safe_bg, interactable=True, has_border=True, z_order=20)
+        scene.add_shape(screw)
+        screws.append(screw)
 
     dial_size = 0.3 * sizeMult
-    dial = Shape("circle", "lightgray", dial_size, (0, 0), parent=safe_bg, interactable=True, has_border=True, z_order=3)
+    dial = Shape("circle", "lightgray", dial_size, (0, 0),
+                 parent=safe_bg, interactable=True, has_border=True, z_order=30)
+    scene.add_shape(dial)
 
-    return safe_bg
+    return scene
                       
     
 
@@ -150,11 +250,7 @@ running = True
 mouse_click_pos = None
 
 # Define shapes
-# root_shape = Shape("square", "gray", 0.3, (0.5, 0.5), interactable=True, has_border=True, border_thickness=5)
-# child1 = Shape("circle", "blue", 0.1, (1.0, 0.0), parent=root_shape, interactable=True, has_border=True, border_thickness=3)
-# child2 = Shape("square", "red", 0.1, (0.0, 1.0), parent=root_shape, interactable=True, has_border=True, border_thickness=2)
-
-safe = create_safe(False, 1.0)
+safe_scene = create_safe(False, 1.0)
 
 while running:
     mouse_click_pos = None
@@ -173,8 +269,8 @@ while running:
 
     screen.fill((30, 30, 30))
 
-    # Draw the full shape hierarchy starting from the root
-    safe.draw(screen, (width, height), mouse_pos, mouse_click_pos)
+    # Draw the full shape hierarchy using the scene manager
+    safe_scene.draw(screen, (width, height), mouse_pos, mouse_click_pos)
 
     # Text
     display_message("Hello Player!", 0.1, 0.1)
